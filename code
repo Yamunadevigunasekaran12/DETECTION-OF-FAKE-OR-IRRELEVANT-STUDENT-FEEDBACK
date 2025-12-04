@@ -1,0 +1,460 @@
+# --- Required Libraries ---
+# Make sure you have these installed:
+# install.packages(c("shiny", "shinydashboard", "dplyr", "ggplot2", "scales", "DT"))
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(ggplot2)
+library(lubridate)  # future-friendly
+library(scales)
+library(DT)         # for interactive table
+
+# --- Custom Pastel Colors ---
+pastel_palette_discrete <- c("#C2DFFF", "#A7D7C5", "#F7B8C4", "#FFECCF", "#DCDCDC")
+pastel_mint   <- "#A7D7C5"
+pastel_blue   <- "#C2DFFF"
+pastel_pink   <- "#F7B8C4"
+pastel_yellow <- "#FFECCF"
+
+# --- Load and Prepare Data ---
+data_path <- "C:\\Users\\Yamuna Devi G\\dev_projectr\\real_student_dataset.csv"
+
+if (file.exists(data_path)) {
+  df_raw <- read.csv(data_path)
+  
+  set.seed(42)  # reproducibility
+  
+  df <- df_raw %>%
+    rename(course_id = course) %>%
+    mutate(
+      rating = ifelse(
+        feedback_type == "valid",
+        sample(
+          c(4, 5, 3, 2, 1),
+          n(),
+          replace = TRUE,
+          prob = c(0.4, 0.3, 0.15, 0.1, 0.05)
+        ),
+        NA
+      ),
+      sentiment_score = ifelse(
+        feedback_type == "valid",
+        runif(n(), min = 0.1, max = 0.8),
+        NA
+      ),
+      rating = factor(rating, levels = 1:5)
+    )
+  
+  all_courses <- sort(unique(df$course_id))
+  
+} else {
+  stop(paste("File not found:", data_path))
+}
+
+# --- UI ---
+ui <- dashboardPage(
+  
+  dashboardHeader(title = "Student Feedback Quality & Analytics"),
+  
+  dashboardSidebar(
+    width = 250,
+    
+    tags$h4(
+      style = "padding-left: 15px; color: #555555; font-weight: bold;",
+      "Filter Data"
+    ),
+    tags$hr(style = "border-top: 1px solid #ccc;"),
+    
+    selectInput(
+      "course_filter",
+      "Filter by Course:",
+      choices = c("All", all_courses),
+      selected = "All"
+    ),
+    
+    selectInput(
+      "type_filter",
+      "Filter by Feedback Type:",
+      choices = c("All", "valid", "irrelevant", "fake"),
+      selected = "All"
+    )
+  ),
+  
+  dashboardBody(
+    tags$head(tags$style(HTML('
+        .content-wrapper, .right-side {
+          background-color: #F8F8F8; 
+        }
+        .box.box-solid.box-primary > .box-header {
+          background-color: #C2DFFF !important;
+          color: #333333;
+        }
+        .box.box-solid.box-primary {
+          border-left-color: #A7D7C5 !important;
+        }
+    '))),
+    
+    # Row 1: KPIs
+    fluidRow(
+      valueBoxOutput("totalFeedbackBox", width = 4),
+      valueBoxOutput("validPercentageBox", width = 4),
+      valueBoxOutput("avgSentimentBox", width = 4)
+    ),
+    
+    # Row 2: Main distributions (more tabs added)
+    fluidRow(
+      tabBox(
+        width = 12,
+        
+        tabPanel(
+          "Feedback Quality Distribution",
+          plotOutput("feedbackTypePlot", height = 380)
+        ),
+        
+        tabPanel(
+          "Valid Feedback Rating Distribution",
+          plotOutput("ratingDistributionPlot", height = 380)
+        ),
+        
+        tabPanel(
+          "Feedback by Course & Type",
+          plotOutput("feedbackCourseTypePlot", height = 380)
+        ),
+        
+        tabPanel(
+          "Valid Feedback by Course",
+          plotOutput("validByCoursePlot", height = 380)
+        )
+      )
+    ),
+    
+    # Row 3: Sentiment analysis
+    fluidRow(
+      box(
+        title = "Average Sentiment Score by Course (Valid Feedback Only)",
+        status = "primary",
+        solidHeader = TRUE,
+        width = 6,
+        plotOutput("sentimentByCoursePlot", height = 380)
+      ),
+      box(
+        title = "Sentiment Distribution (Valid Feedback)",
+        status = "primary",
+        solidHeader = TRUE,
+        width = 6,
+        plotOutput("sentimentDistPlot", height = 380)
+      )
+    ),
+    
+    # Row 4: Rating vs sentiment + data table
+    fluidRow(
+      box(
+        title = "Rating vs Sentiment (Valid Feedback)",
+        status = "primary",
+        solidHeader = TRUE,
+        width = 6,
+        plotOutput("ratingVsSentimentPlot", height = 380)
+      ),
+      box(
+        title = "Feedback Details (Filtered Data)",
+        status = "primary",
+        solidHeader = TRUE,
+        width = 6,
+        DTOutput("feedbackTable")
+      )
+    )
+  )
+)
+
+# --- Server ---
+server <- function(input, output, session) {
+  
+  # Filtered data reactive
+  filtered_data <- reactive({
+    data <- df
+    
+    if (input$course_filter != "All") {
+      data <- data %>% filter(course_id == input$course_filter)
+    }
+    
+    if (input$type_filter != "All") {
+      data <- data %>% filter(feedback_type == input$type_filter)
+    }
+    
+    data
+  })
+  
+  # --- KPIs ---
+  output$totalFeedbackBox <- renderValueBox({
+    n_feedback <- nrow(filtered_data())
+    valueBox(
+      format(n_feedback, big.mark = ","),
+      "Total Feedbacks Analyzed",
+      icon = icon("chalkboard-teacher"),
+      color = "aqua"
+    )
+  })
+  
+  output$validPercentageBox <- renderValueBox({
+    total_rows <- nrow(filtered_data())
+    valid_rows <- filtered_data() %>%
+      filter(feedback_type == "valid") %>%
+      nrow()
+    
+    valid_percent <- if (total_rows > 0) (valid_rows / total_rows) else 0
+    
+    valueBox(
+      paste0(round(valid_percent * 100, 1), "%"),
+      "Feedback Quality (Valid)",
+      icon = icon("check-circle"),
+      color = "green"
+    )
+  })
+  
+  output$avgSentimentBox <- renderValueBox({
+    avg_sentiment <- filtered_data() %>%
+      filter(feedback_type == "valid") %>%
+      summarise(mean_sentiment = mean(sentiment_score, na.rm = TRUE)) %>%
+      pull(mean_sentiment)
+    
+    if (is.na(avg_sentiment)) avg_sentiment <- 0
+    
+    color_sentiment <- ifelse(avg_sentiment > 0.4, "light-blue", "yellow")
+    
+    valueBox(
+      sprintf("%.2f", avg_sentiment),
+      "Avg. Sentiment Score (Valid)",
+      icon = icon("smile"),
+      color = color_sentiment
+    )
+  })
+  
+  # --- Plots ---
+  # 1) Feedback type distribution
+  output$feedbackTypePlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      group_by(feedback_type) %>%
+      summarise(count = n(), .groups = "drop") %>%
+      mutate(percentage = count / sum(count))
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    type_colors <- c(
+      "valid"      = pastel_mint,
+      "irrelevant" = pastel_yellow,
+      "fake"       = pastel_pink
+    )
+    
+    ggplot(plot_data, aes(x = feedback_type, y = count, fill = feedback_type)) +
+      geom_bar(stat = "identity", color = "#555555", linewidth = 0.5) +
+      scale_fill_manual(values = type_colors) +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Distribution of Feedback Quality Types",
+        x = "Feedback Type",
+        y = "Number of Feedbacks"
+      ) +
+      geom_text(
+        aes(label = paste0(count, "\n(", percent(percentage, 1), ")")),
+        vjust = -0.5, size = 4, color = "#333333"
+      ) +
+      theme(
+        legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#333333"),
+        panel.grid.major.x = element_blank()
+      )
+  })
+  
+  # 2) Rating distribution (valid only)
+  output$ratingDistributionPlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      filter(feedback_type == "valid") %>%
+      group_by(rating) %>%
+      summarise(count = n(), .groups = "drop")
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    ggplot(plot_data, aes(x = rating, y = count, fill = rating)) +
+      geom_bar(stat = "identity", color = "#555555", linewidth = 0.5) +
+      scale_fill_manual(values = pastel_palette_discrete) +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Distribution of Ratings (1–5) for Valid Feedback",
+        x = "Rating",
+        y = "Number of Feedbacks"
+      ) +
+      geom_text(
+        aes(label = count),
+        vjust = -0.5, size = 4, color = "#333333"
+      ) +
+      theme(
+        legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#333333"),
+        panel.grid.major.x = element_blank()
+      )
+  })
+  
+  # 3) NEW: Feedback by Course & Type (stacked bar)
+  output$feedbackCourseTypePlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      group_by(course_id, feedback_type) %>%
+      summarise(count = n(), .groups = "drop")
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    type_colors <- c(
+      "valid"      = pastel_mint,
+      "irrelevant" = pastel_yellow,
+      "fake"       = pastel_pink
+    )
+    
+    ggplot(plot_data, aes(x = course_id, y = count, fill = feedback_type)) +
+      geom_col(color = "#555555", linewidth = 0.3) +
+      scale_fill_manual(values = type_colors, name = "Feedback Type") +
+      coord_flip() +
+      theme_minimal(base_size = 13) +
+      labs(
+        title = "Feedback Count by Course & Type",
+        x = "Course",
+        y = "Number of Feedbacks"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", color = "#333333"),
+        panel.grid.major.y = element_blank()
+      )
+  })
+  
+  # 4) NEW: Valid Feedback by Course
+  output$validByCoursePlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      filter(feedback_type == "valid") %>%
+      group_by(course_id) %>%
+      summarise(count = n(), .groups = "drop") %>%
+      arrange(desc(count))
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    ggplot(plot_data, aes(x = reorder(course_id, count), y = count)) +
+      geom_col(fill = pastel_blue, color = "#555555", linewidth = 0.4) +
+      coord_flip() +
+      theme_minimal(base_size = 13) +
+      labs(
+        title = "Valid Feedback Count per Course",
+        x = "Course",
+        y = "Valid Feedbacks"
+      ) +
+      geom_text(
+        aes(label = count),
+        hjust = -0.2, size = 4, color = "#333333"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", color = "#333333")
+      )
+  })
+  
+  # 5) Average sentiment by course
+  output$sentimentByCoursePlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      filter(feedback_type == "valid") %>%
+      group_by(course_id) %>%
+      summarise(
+        avg_sentiment = mean(sentiment_score, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      arrange(desc(avg_sentiment))
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    ggplot(plot_data, aes(x = reorder(course_id, avg_sentiment), y = avg_sentiment, fill = avg_sentiment)) +
+      geom_bar(stat = "identity") +
+      scale_fill_gradient2(
+        low = pastel_pink,
+        mid = pastel_yellow,
+        high = pastel_mint,
+        midpoint = 0.4,
+        name = "Avg. Score"
+      ) +
+      coord_flip() +
+      theme_minimal(base_size = 14) +
+      labs(
+        x = "Course ID",
+        y = "Average Sentiment Score (Valid)"
+      ) +
+      geom_hline(
+        yintercept = mean(plot_data$avg_sentiment, na.rm = TRUE),
+        linetype = "dashed",
+        color = "#555555"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", color = "#333333"),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank()
+      )
+  })
+  
+  # 6) NEW: Sentiment distribution (histogram)
+  output$sentimentDistPlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      filter(feedback_type == "valid", !is.na(sentiment_score))
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    ggplot(plot_data, aes(x = sentiment_score)) +
+      geom_histogram(bins = 20, fill = pastel_mint, color = "#555555") +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Sentiment Score Distribution (Valid Feedback)",
+        x = "Sentiment Score",
+        y = "Count"
+      )
+  })
+  
+  # 7) NEW: Rating vs Sentiment (boxplot)
+  output$ratingVsSentimentPlot <- renderPlot({
+    plot_data <- filtered_data() %>%
+      filter(feedback_type == "valid", !is.na(sentiment_score), !is.na(rating))
+    
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    ggplot(plot_data, aes(x = rating, y = sentiment_score, fill = rating)) +
+      geom_boxplot(alpha = 0.9, outlier.alpha = 0.4) +
+      scale_fill_manual(values = pastel_palette_discrete) +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Sentiment Score by Rating (Valid Feedback)",
+        x = "Rating",
+        y = "Sentiment Score"
+      ) +
+      theme(
+        legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#333333")
+      )
+  })
+  
+  # 8) NEW: Interactive feedback table
+  output$feedbackTable <- renderDT({
+    data <- filtered_data() %>%
+      select(
+        reg_no,
+        student_name,
+        course_id,
+        feedback_type,
+        rating,
+        sentiment_score,
+        feedback_text
+      )
+    
+    datatable(
+      data,
+      options = list(
+        pageLength = 10,
+        lengthChange = TRUE,
+        autoWidth = TRUE
+      ),
+      rownames = FALSE
+    )
+  })
+}
+
+# --- Run App ---
+shinyApp(ui = ui, server = server)
